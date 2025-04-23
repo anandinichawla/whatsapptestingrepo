@@ -449,7 +449,7 @@ async function makeTwilioRequest() {
 
         const twiml = new MessagingResponse();
         twiml.message(
-          `🛡️ To schedule meetings, please sign in with Google: ${authUrl}`
+          `To schedule meetings, please sign in with Google: ${authUrl}`
         );
         return res.type("text/xml").send(twiml.toString());
       }
@@ -473,6 +473,15 @@ You MUST check for missing or ambiguous fields. Be especially strict about time 
 - If a time like "8" or "tomorrow 8" is mentioned without AM/PM, ask the user to clarify.
 - Never assume AM or PM.
 - Phrases like "8", "5", or "at 3" without a clear indication of AM/PM or 24-hour format should be considered ambiguous.
+
+You also support **recurring meeetings**:
+- If the user says "daily", "every day", "weekly", "every Monday", or "monthly", treat it as recurring meeting. 
+- If the recurrence is clear, return it in this RRULE format: 
+  - "daily" → "RRULE:FREQ=DAILY"
+  - "weekly on Monday" → "RRULE: FREQ=WEEKLY;BYDAY="MO"
+  - "monthly on 1st"→ "RRULE:FREQ=MONTHLY;BYMONTHDAY=1"
+
+- If all details are clear, return nothing (leave response empty). 
 
 If anything is unclear or missing, respond with a plain text clarification question. For example:
 "I noticed you said 'tomorrow 8'. Did you mean 8 AM or 8 PM? Please reply with the exact time."
@@ -505,6 +514,10 @@ If the message is clear and contains all fields with no ambiguity, return nothin
                   type: "array",
                   items: { type: "string", format: "email" },
                 },
+              recurrence: {
+                type: "string",
+                description: "Optional, RRULE format for recurrence (e.g., 'RRULE:FREQ=DAILY')"
+               },
               },
               required: ["title", "date", "startTime", "durationMinutes"],
             },
@@ -577,6 +590,10 @@ If the message is clear and contains all fields with no ambiguity, return nothin
             conferenceSolutionKey: { type: "hangoutsMeet" },
           },
         },
+        recurrence: recurrence ? [reccurence] : undefined, 
+        if (recurrence){
+          event.recurrence = [recurrence]; 
+        }
       };
 
       let calendarResponse;
