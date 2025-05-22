@@ -25,6 +25,7 @@ const chrono = require("chrono-node");
 
 // Local imports
 const supabase = require("./supabaseClient");
+const { start } = require("repl");
 require("dotenv").config();
 
 // ============================================================================
@@ -140,6 +141,134 @@ function getOAuthClient(refreshToken) {
   oAuth2Client.setCredentials({ refresh_token: refreshToken });
   return oAuth2Client;
 }
+
+// ===== Utility Function =====
+
+
+function isValidClockTime(date, startTime) {
+
+
+  console.log("I am valid clock time function");
+  console.log("startTime in valid function", startTime);
+  if (!startTime || !date) return false;
+
+  const cleaned = startTime
+  .trim()
+  .replace(/^['"]+|['"]+$/g, '')  // remove leading/trailing single/double quotes
+  .replace(/\u00A0/g, ' ')        // replace non-breaking spaces
+  .replace(/\s+/g, ' ');          // collapse extra spaces
+
+  const validFormat = /^\d{1,2}(?:\s*:\s*\d{2})?\s*(a\s*m|am|p\s*m|pm)$/i;
+
+  console.log(`'${cleaned}' →`, validFormat.test(cleaned));
+  if (!check) {
+    console.log("I am in valid format if statement");
+    return false;
+  } 
+
+  const durationPattern = /\b\d+\s*(min|mins|minutes|hour|hours|hr|hrs|half\s*hour|quarter\s*hour)\b/i;
+  if (durationPattern.test(startTime)) {
+    console.log("I am in duration pattern if statement");
+    return false;
+
+  } 
+
+  const fuzzyWords = ["later", "someday", "evening", "morning", "ish"];
+  if (fuzzyWords.some(w => startTime.toLowerCase().includes(w))) return false;
+
+  const chronoParsed = chrono.parseDate(`${date} ${startTime}`, new Date(), { forwardDate: true });
+
+  console.log("printing chrono parsed date", chronoParsed); 
+  
+
+  if (!chronoParsed) return false;
+
+  // Check if parsed time is a vague relative time (e.g., "10 mins from now")
+  const diffInMinutes = (chronoParsed - new Date()) / (1000 * 60);
+  console.log("printing diff mins", diffInMinutes);
+  if (diffInMinutes > 0 && diffInMinutes < 180) {
+    console.log("I am in diff in minutes if statement");
+    return false;
+  }
+  
+
+  console.log("printing true");
+  return true;
+} // end of is valid clock time function
+
+function isValidDuration(durationText) {
+  if (!durationText) return false;
+
+  // Check for valid numeric durations like "30", "45", "60"
+  const simpleNumeric = /^\d+$/;
+  if (simpleNumeric.test(durationText.trim())) return true;
+
+  // Allow conversational forms like "30 mins", "1 hour", etc.
+  const durationPattern = /^\d+\s*(min|mins|minutes|hour|hours|hr|hrs)$/i;
+  return durationPattern.test(durationText.trim());
+}
+
+async function parseAndValidateClockTime(userMessage, date, args, userNumber, res) {
+  const validFormat = /^\d{1,2}(:\d{2})?\s*(am|pm)$/i;
+  const durationPattern = /\b\d+\s*(min|mins|minutes|hour|hours|hr|hrs|half\s*hour|quarter\s*hour)\b/i;
+  const fuzzyWords = ["later", "someday", "evening", "morning", "ish", "soon"];
+
+  // ❌ 1. Filter clearly invalid or vague phrases
+  if (
+    !userMessage ||
+    fuzzyWords.some(w => userMessage.toLowerCase().includes(w)) ||
+    durationPattern.test(userMessage) ||
+    !validFormat.test(userMessage.trim())
+  ) {
+    sessions[userNumber] = {
+      awaitingStartTime: true,
+      pendingArgs: args,
+    };
+
+    const twiml = new MessagingResponse();
+    twiml.message("⏰ I couldn’t understand the meeting time. Please reply with a specific time like *10:00 AM* or *3:30 PM*.");
+    res.type("text/xml").send(twiml.toString());
+    return false;
+  }
+
+  // ⏱ 2. GPT disambiguation for weird inputs like "30pm"
+  const gptDisambiguation = await openai.chat.completions.create({
+    model: "gpt-4",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an assistant verifying if a time string is a valid clock time like '10:00 AM', '3 PM', etc.\n" +
+          "- If it's valid, return the cleaned-up time like '3:00 PM'.\n" +
+          "- If it's confusing or not a valid time, return: unclear.",
+      },
+      {
+        role: "user",
+        content: userMessage
+      }
+    ]
+  });
+
+  const reply = gptDisambiguation.choices?.[0]?.message?.content?.trim();
+  console.log("GPT reply for start time classification:", reply);
+
+  if (!reply || reply.toLowerCase() === "unclear") {
+    sessions[userNumber] = {
+      awaitingStartTime: true,
+      pendingArgs: args,
+    };
+
+    const twiml = new MessagingResponse();
+    twiml.message("⏰ I couldn’t understand the time you gave. Please reply with a valid time like *10:00 AM*.");
+    res.type("text/xml").send(twiml.toString());
+    return false;
+  }
+
+  args.startTime = reply; // ✅ Use corrected format like "10:00 AM"
+  return true;
+}
+
+
 
 // ============================================================================
 // SUPABASE DATA FUNCTIONS
@@ -487,14 +616,15 @@ async function transcribeAudioDirectly(mediaUrl) {
 async function scheduleMeeting({args, userNumber, refreshToken, res}) {
   console.log("I am in schedule meeting and next I am printing args");
   console.log(args);
-  const {title, date, startTime, durationMinutes, attendees = [], recurrence, endDate } = args; 
-  if(!date){ 
+  const {title, startDate, startTime, durationMinutes, attendees = [], recurrence, endDate } = args; 
+
+  if(!startDate){ 
     const twiml = new MessagingResponse(); 
     twiml.message("Start date missing. Please reply with a date like May 7 2025"); 
     return res.type("text/xml").send(twiml.toString()); 
   }
   // const naturalInput = `${date} ${startTime}`;
-  const naturalInput = `${moment(date).format("YYYY-MM-DD")} ${startTime}`;
+  const naturalInput = `${moment(startDate).format("YYYY-MM-DD")} ${startTime}`;
   const parsedDateTime = chrono.parseDate(naturalInput, new Date(), { forwardDate: true});
   console.log("I am printing parsed date and time"); 
   if (!parsedDateTime) {
@@ -513,7 +643,7 @@ async function scheduleMeeting({args, userNumber, refreshToken, res}) {
 
   console.log("Parsed values from OpenAI:");
   console.log("Title:", title);
-  console.log("Date:", date);
+  console.log("Date:", startDate);
   console.log("startDateTime:", startDateTime.toISOString());
   console.log("endDateTime:", endDateTime.toISOString());
   console.log("Start Time:", startTime);
@@ -606,7 +736,7 @@ async function makeTwilioRequest() {
 
     const refreshToken = await getRefreshToken(userNumber);
 
-    console.log("Sending request at", new Date().toISOString());
+    console.log("Before correction response / calling date function", new Date().toISOString());
 
     console.log("I have first come to correction response");
     const correctionResponse = await openai.chat.completions.create({
@@ -615,7 +745,21 @@ async function makeTwilioRequest() {
         {
           role: "system", 
           content:
-          "You are a helpful assistant that corrects typos in user input. Only return the corrected sentence without any explaination.",
+           `You are a helpful assistant that corrects typos in user input.
+
+If the input looks mostly fine, just repeat it.
+
+If there are spelling or time-related errors (like '30pm' instead of '3pm'), return:
+
+- original: the original message
+- corrected: the corrected message
+
+Format your response in JSON like:
+{
+  "original": "schedule at 30pm",
+  "corrected": "schedule at 3pm"
+}`
+
         }, 
         {
           role: "user",
@@ -624,34 +768,72 @@ async function makeTwilioRequest() {
       ], 
     }); 
 
-    console.log("Correction response"); 
-    console.log(JSON.stringify(correctionResponse, null, 2));
-    console.log("printing trimmed portion of correction response");
-    console.log(correctionResponse.choices[0].message.content.trim());
-    console.log("I am at if statement of correction response"); 
-
-    if (
-      !correctionResponse ||
-      !correctionResponse.choices ||
-      !correctionResponse.choices.length
-    ) {
-      console.log("came back to correction response if statment___I am at if statement of correction response");
-      console.error("Correction failed or returned empty:", correctionResponse);
-      // fallback to original userMessage
-    } else{
-       console.log("I am printing trimmed portion of correction response");
-       console.log(correctionResponse.choices[0].message.content.trim());
-       userMessage = correctionResponse.choices[0].message.content.trim();
+    let correctedData;
+    try {
+      correctedData = JSON.parse(correctionResponse.choices?.[0]?.message?.content || "{}");
+      console.log("printing corrected data"); 
+    } catch (e) {
+      console.log("❌ Failed to parse correction response");
     }
 
+    if (correctedData?.original && correctedData?.corrected && correctedData.original !== correctedData.corrected) {
+      // Ask user for confirmation instead of applying it blindly
+      sessions[userNumber] = {
+        awaitingCorrectionConfirmation: true,
+        correctionCandidate: correctedData.corrected,
+        originalMessage: correctedData.original,
+        pendingArgs: sessions[userNumber]?.pendingArgs || {},
+        awaitingStartTime: sessions[userNumber]?.awaitingStartTime,
+        awaitingDuration: sessions[userNumber]?.awaitingDuration,
+        awaitingTitle: sessions[userNumber]?.awaitingTitle,
+        awaitingStartDate: sessions[userNumber]?.awaitingStartDate,
+        awaitingEndDate: sessions[userNumber]?.awaitingEndDate,
+        awaitingAttendees: sessions[userNumber]?.awaitingAttendees
+      };
+      
+      console.log("printing original of corrected data variable", correctedData.original); 
+      console.log("print correctedData", correctedData.corrected); 
+
+      const twiml = new MessagingResponse();
+      twiml.message(`Did you mean: "${correctedData.corrected}" instead of "${correctedData.original}"? Reply with "yes" to confirm or rephrase your message.`);
+      return res.type("text/xml").send(twiml.toString());
+    } else {
+      console.log("printing user message in else statement", userMessage.trim()); 
+      userMessage = userMessage.trim(); // use original message if no correction
+    }
+
+
+    // console.log("Correction response"); 
+    // console.log(JSON.stringify(correctionResponse, null, 2));
+    // console.log("printing trimmed portion of correction response");
+    // console.log(correctionResponse.choices[0].message.content.trim());
+    // console.log("I am at if statement of correction response"); 
+
+    // if (
+    //   !correctionResponse ||
+    //   !correctionResponse.choices ||
+    //   !correctionResponse.choices.length
+    // ) {
+    //   console.log("came back to correction response if statment___I am at if statement of correction response");
+    //   console.error("Correction failed or returned empty:", correctionResponse);
+    //   // fallback to original userMessage
+    // } else{
+    //    console.log("I am printing trimmed portion of correction response");
+    //    console.log(correctionResponse.choices[0].message.content.trim());
+    //    userMessage = correctionResponse.choices[0].message.content.trim();
+    // }
+
     // Handle pending session states for meeting scheduling
+    console.log("printing user session pending args outside if ", sessions[userNumber]?.pendingArgs); 
+    
     if (sessions[userNumber]?.pendingArgs) {
+      console.log("printing user session pending args inside if", sessions[userNumber]?.pendingArgs); 
       console.log("printed correction response now handling pending args");
       const pending = sessions[userNumber]; 
       const args = pending.pendingArgs; 
       console.log("I am going ahead and printing args"); 
       console.log(args);
-      console.log("✅ args.date =", args.date);
+      console.log("✅ args.date =", args.startDate);
       console.log("✅ args.startTime =", args.startTime);
 
 
@@ -662,9 +844,30 @@ async function makeTwilioRequest() {
 
       
       console.log("here before all the pending ifs start"); 
+      // ✅ Handle correction confirmation response
+      if (sessions[userNumber]?.awaitingCorrectionConfirmation) {
+        const pending = sessions[userNumber];
+        const corrected = pending.correctionCandidate;
+        const original = pending.originalMessage;
+
+        if (userMessage.toLowerCase() === "yes") {
+          userMessage = corrected;
+          delete sessions[userNumber].awaitingCorrectionConfirmation;
+          delete sessions[userNumber].correctionCandidate;
+          delete sessions[userNumber].originalMessage;
+          console.log("✅ User confirmed correction. Using corrected input:", userMessage);
+        } else {
+          // Treat any other reply as a new/fresh message — drop the correction flow
+          delete sessions[userNumber];
+          const twiml = new MessagingResponse();
+          twiml.message("Got it! Let's start over. Please rephrase your message.");
+          return res.type("text/xml").send(twiml.toString());
+        }
+      }
+
       if (pending.awaitingStartDate) {
         console.log("start date missing"); 
-        args.date = userMessage;
+        args.startDate = userMessage;
       } else if (pending.awaitingEndDate) {
         args.endDate = userMessage; 
       } else if (pending.awaitingTitle){
@@ -672,9 +875,50 @@ async function makeTwilioRequest() {
       }  else if (pending.awaitingStartTime){
         console.log("start time missing, I have it and now I am assigning it");
         args.startTime = userMessage; 
+        const validTime = await parseAndValidateClockTime(userMessage, args.startDate, args, userNumber, res);
+        if (!validTime) return;
       } else if (pending.awaitingDuration) {
         console.log("duration was missing, I have it and now I am assigning it");
-        args.durationMinutes = parseInt(userMessage);
+       // args.durationMinutes = parseInt(userMessage); 
+
+        // first fallback verification 
+        if (isValidDuration(userMessage.trim())) {
+          const numMatch = userMessage.match(/\d+/);
+          args.durationMinutes = numMatch ? parseInt(numMatch[0]) : null;
+        } 
+        else {
+          // ❌ Ask the user again using GPT for clarity
+          const gptCheck = await openai.chat.completions.create({
+            model: "gpt-4",
+            messages: [
+              {
+                role: "system",
+                content: "You are an AI assistant. Determine if this phrase refers to a meeting duration (e.g., '30 minutes') or something else. If it's a duration, reply ONLY with the number in minutes (e.g., '30'). Otherwise, reply: 'unclear'."
+              },
+              {
+                role: "user",
+                content: userMessage
+              }
+            ]
+          });
+      
+          const reply = gptCheck.choices?.[0]?.message?.content?.trim();
+          console.log("gpt reply", reply); 
+          console.log("GPT reply for duration classification:", reply);
+      
+          const parsed = parseInt(reply);
+          if (!isNaN(parsed)) {
+            args.durationMinutes = parsed;
+          } else {
+            // Still unclear, ask user directly
+            sessions[userNumber] = { awaitingDuration: true, pendingArgs: args };
+            const twiml = new MessagingResponse();
+            twiml.message("⏱ I couldn’t understand how long the meeting should be. Please reply with a duration like '30 minutes'.");
+            return res.type("text/xml").send(twiml.toString());
+          }
+        }
+        
+             
       } else if (pending.awaitingAttendees) {
         args.attendees = userMessage.split(/[ ,]+/);
       } else {
@@ -695,6 +939,8 @@ async function makeTwilioRequest() {
         return res.type("text/xml").send(twiml.toString());
       }
 
+      
+
       if (!args.startTime) {
         sessions[userNumber] = { awaitingStartTime: true, pendingArgs: args };
         const twiml = new MessagingResponse();
@@ -703,24 +949,68 @@ async function makeTwilioRequest() {
         return res.type("text/xml").send(twiml.toString());
       }
 
-      if (!args.date) {
-        sessions[userNumber] = { awaitingStartDate: true, pendingArgs: args };
+      // Reject past or hallucinated dates like 2022
+      if (args.startDate) {
+        const parsedDate = moment(args.startDate, "YYYY-MM-DD", true);
+        console.log("printing parsed date",parsedDate); 
+        if (!parsedDate.isValid() || parsedDate.isBefore(moment(), "day")) {
+          sessions[userNumber] = {
+            awaitingStartDate: true,
+            pendingArgs: args,
+          };
+
+          const twiml = new MessagingResponse();
+          twiml.message("Seems like you haven't provided date or the date you mentioned seems to be in the past or unclear. Please reply with a future date (e.g., May 20, 2025).");
+          return res.type("text/xml").send(twiml.toString());
+        }
+      }
+
+
+      // if (!args.startDate) {
+      //   sessions[userNumber] = { awaitingStartDate: true, pendingArgs: args };
+      //   const twiml = new MessagingResponse();
+      //   twiml.message("When should this meeting happen? Please provide the date (e.g., May 6, 2025).");
+      //   return res.type("text/xml").send(twiml.toString());
+      // }
+
+      // if (!args.durationMinutes) {
+      //   sessions[userNumber] = { awaitingDuration: true, pendingArgs: args };
+      //   const twiml = new MessagingResponse();
+      //   twiml.message("How long should this meeting be? Please reply with the duration in minutes (e.g., 30).");
+      //   return res.type("text/xml").send(twiml.toString());
+      // }
+      // 🧠 After GPT returns args
+      if (!args.durationMinutes || /a\s*while|some\s*time|soon|later|eventually/i.test(args.durationMinutes)) {
+        sessions[userNumber] = {
+          awaitingDuration: true,
+          pendingArgs: args,
+        };
+        console.log("I am in args duration if statement");
         const twiml = new MessagingResponse();
-        twiml.message("When should this meeting happen? Please provide the date (e.g., May 6, 2025).");
+        twiml.message("⏱️ How long should this meeting be? Please reply with a clear duration (e.g., 30 minutes, 1 hour).");
         return res.type("text/xml").send(twiml.toString());
       }
 
-      if (!args.durationMinutes) {
-        sessions[userNumber] = { awaitingDuration: true, pendingArgs: args };
-        const twiml = new MessagingResponse();
-        twiml.message("How long should this meeting be? Please reply with the duration in minutes (e.g., 30).");
-        return res.type("text/xml").send(twiml.toString());
-      }
 
       if (!args.attendees || args.attendees.length === 0) {
         sessions[userNumber] = { awaitingAttendees: true, pendingArgs: args };
         const twiml = new MessagingResponse();
         twiml.message("Who should be invited to this meeting? Please reply with one or more email addresses.");
+        return res.type("text/xml").send(twiml.toString());
+      }
+
+      let validclocktime = false; 
+
+      validclocktime = isValidClockTime(args.startDate, args.startTime); 
+      console.log("printing valid clock time", validclocktime); 
+      if (!validclocktime) {
+        sessions[userNumber] = {
+          awaitingStartTime: true,
+          pendingArgs: args,
+        };
+      
+        const twiml = new MessagingResponse();
+        twiml.message("⏰ I couldn’t understand the time you provided. Please reply with a specific time like '10:00 AM'.");
         return res.type("text/xml").send(twiml.toString());
       }
 
@@ -781,6 +1071,8 @@ async function makeTwilioRequest() {
         console.log("checking session", sessions[userNumber]);
         console.log("awaitingEndDate?", sessions[userNumber]?.awaitingEndDate);
         console.log("pendingArgs?", sessions[userNumber]?.pendingArgs);
+        console.log("start date", sessions[userNumber]?.awaitingStartDate);
+
         console.log("user message", userMessage); 
 
         // Initialize new session if not exists 
@@ -817,6 +1109,18 @@ IMPORTANT TIME EXTRACTION RULES: - Never include phrases like "forever", "every 
 - The recurrence rule should capture frequency patterns, not the start time field. 
 For example: - "schedule team sync forever monday beginning may 12th 2025" → No start time provided, leave startTime empty - "schedule meeting at 3pm every day" → startTime should be "3:00 PM" \`
 
+IMPORTANT DATE RULES: - Never return relative date terms like "tomorrow", "next week", or "today".
+- Always convert them to an actual date in the format YYYY-MM-DD.
+- The current date is: ${todayDate}
+- If the user says "tomorrow", convert it to 2025-05-07. 
+- When a user says “tomorrow”, always convert it to 2025-05-07.
+- When a user says “next Monday”, compute the real date from 2025-05-06.
+- Never return made-up or fixed placeholder dates like “2022-10-06”.
+- Always return an actual calendar date in YYYY-MM-DD format based on today: 2025-05-06.
+
+IMPORTANT: If the user says something like "10 mins" or "30 minutes", treat that as duration — NOT start time.
+
+If the start time is unclear or looks like a duration, leave it blank. Do NOT fill startTime with vague or incorrect values.
 
 
 Examples:
@@ -852,6 +1156,7 @@ You must ensure:
 - For **recurring meetings**, you must also ask for:
      - A **start date** (if not specified). 
      - An **end date** (until when the meeting should repeat). 
+  
 
 - If all details are clear, return nothing (leave response empty). 
 
@@ -859,6 +1164,7 @@ If anything is unclear or missing (including end date for recurring meetings), r
 "I noticed you said 'tomorrow 8'. Did you mean 8 AM or 8 PM? Please reply with the exact time."
 "If someone says "every Monday at 8", ask: "What date should this recurring meeting start from?"
 "If someone says "daily at 5pm", ask: "From which date should this repeat?" 
+"Never hallucinate or infer old or ambiguous dates. Only return a date if you're confident it's in the future. If you're unsure, leave the date field blank and let the user confirm it."
 
 If the message is clear and contains all fields with no ambiguity, return nothing — leave the response empty.`
               },
@@ -881,7 +1187,7 @@ If the message is clear and contains all fields with no ambiguity, return nothin
                 type: "object",
                 properties: {
                   title: { type: "string" },
-                  date: { type: "string", format: "date" },
+                  startDate: { type: "string", format: "date" },
                   startTime: { type: "string" },
                   durationMinutes: { type: "number" },
                   attendees: {
@@ -920,11 +1226,14 @@ If the message is clear and contains all fields with no ambiguity, return nothin
         }
 
         const args = JSON.parse(gptReply.function_call.arguments);
-        const { title, date, startTime, durationMinutes, attendees = [], recurrence, endDate } = args;
+        console.log("printing all the args after gpt response");
+        console.log(args);
+        const { title, startDate, startTime, durationMinutes, attendees = [], recurrence, endDate } = args;
 
         // if recurrence exists but no start date, ask the user
-        console.log("printing args date", args.date);
-        console.log("date", date); 
+        console.log("printing args date", args.startDate);
+        console.log("printing startdate after gpt response sessions",sessions[userNumber].startDate)
+        //console.log("date, printing date just date", date); 
 
         console.log("printing the starttime", startTime); 
         // Fuzzy or missing start time
@@ -942,9 +1251,30 @@ If the message is clear and contains all fields with no ambiguity, return nothin
         //   return res.type("text/xml").send(twiml.toString());
         // }
 
+        if (!title) {
+          sessions[userNumber] = { awaitingTitle: true, pendingArgs: args };
+          const twiml = new MessagingResponse();
+          twiml.message("What should we call this meeting? Please provide a title (e.g., 'Team Sync').");
+          return res.type("text/xml").send(twiml.toString());
+        }
 
+        if (!durationMinutes) {
+          sessions[userNumber] = { awaitingDuration: true, pendingArgs: args };
+          const twiml = new MessagingResponse();
+          twiml.message("How long should this meeting be? Please reply with the duration in minutes (e.g., 30).");
+          return res.type("text/xml").send(twiml.toString());
+        }
 
-        if(!date) {
+        if (!attendees || attendees.length === 0) {
+          sessions[userNumber] = { awaitingAttendees: true, pendingArgs: args };
+          const twiml = new MessagingResponse();
+          twiml.message("Who should be invited to this meeting? Please reply with one or more email addresses.");
+          return res.type("text/xml").send(twiml.toString());
+        }
+
+       
+        
+        if(!startDate) {
           sessions[userNumber].awaitingStartDate = true; 
           sessions[userNumber].pendingArgs = args; 
 
