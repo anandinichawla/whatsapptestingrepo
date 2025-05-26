@@ -160,11 +160,7 @@ function isValidClockTime(date, startTime) {
 
   const validFormat = /^\d{1,2}(?:\s*:\s*\d{2})?\s*(a\s*m|am|p\s*m|pm)$/i;
 
-  console.log(`'${cleaned}' →`, validFormat.test(cleaned));
-  if (!check) {
-    console.log("I am in valid format if statement");
-    return false;
-  } 
+  console.log(`'${cleaned}' →`, validFormat.test(cleaned));  
 
   const durationPattern = /\b\d+\s*(min|mins|minutes|hour|hours|hr|hrs|half\s*hour|quarter\s*hour)\b/i;
   if (durationPattern.test(startTime)) {
@@ -739,89 +735,62 @@ async function makeTwilioRequest() {
     console.log("Before correction response / calling date function", new Date().toISOString());
 
     console.log("I have first come to correction response");
+
     const correctionResponse = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [
         {
           role: "system", 
-          content:
-           `You are a helpful assistant that corrects typos in user input.
-
-If the input looks mostly fine, just repeat it.
-
-If there are spelling or time-related errors (like '30pm' instead of '3pm'), return:
-
-- original: the original message
-- corrected: the corrected message
-
-Format your response in JSON like:
-{
-  "original": "schedule at 30pm",
-  "corrected": "schedule at 3pm"
-}`
-
+          content: `
+    You are a helpful assistant that automatically corrects typos in user input.
+    
+    Fix spelling, grammar, and time-related issues (like "30pm" → "3pm", "muns" → "mins").
+    
+    Always respond in JSON format:
+    {
+      "original": "user's original input",
+      "corrected": "corrected version of the input"
+    }
+    `
         }, 
         {
           role: "user",
           content: userMessage, 
         }, 
-      ], 
+      ]
     }); 
-
+    
     let correctedData;
-    try {
-      correctedData = JSON.parse(correctionResponse.choices?.[0]?.message?.content || "{}");
-      console.log("printing corrected data"); 
-    } catch (e) {
-      console.log("❌ Failed to parse correction response");
-    }
-
-    if (correctedData?.original && correctedData?.corrected && correctedData.original !== correctedData.corrected) {
-      // Ask user for confirmation instead of applying it blindly
-      sessions[userNumber] = {
-        awaitingCorrectionConfirmation: true,
-        correctionCandidate: correctedData.corrected,
-        originalMessage: correctedData.original,
-        pendingArgs: sessions[userNumber]?.pendingArgs || {},
-        awaitingStartTime: sessions[userNumber]?.awaitingStartTime,
-        awaitingDuration: sessions[userNumber]?.awaitingDuration,
-        awaitingTitle: sessions[userNumber]?.awaitingTitle,
-        awaitingStartDate: sessions[userNumber]?.awaitingStartDate,
-        awaitingEndDate: sessions[userNumber]?.awaitingEndDate,
-        awaitingAttendees: sessions[userNumber]?.awaitingAttendees
-      };
-      
-      console.log("printing original of corrected data variable", correctedData.original); 
-      console.log("print correctedData", correctedData.corrected); 
-
-      const twiml = new MessagingResponse();
-      twiml.message(`Did you mean: "${correctedData.corrected}" instead of "${correctedData.original}"? Reply with "yes" to confirm or rephrase your message.`);
-      return res.type("text/xml").send(twiml.toString());
+    
+    // ✅ Step 1: Safely check and parse the GPT response
+    if (
+      correctionResponse &&
+      correctionResponse.choices &&
+      correctionResponse.choices.length > 0 &&
+      correctionResponse.choices[0].message?.content
+    ) {
+      try {
+        correctedData = JSON.parse(correctionResponse.choices[0].message.content.trim());
+        console.log("Corrected data:", correctedData);
+      } catch (e) {
+        console.error("Failed to parse GPT response as JSON:", correctionResponse.choices[0].message.content);
+        correctedData = { original: userMessage, corrected: userMessage }; // fallback
+      }
     } else {
-      console.log("printing user message in else statement", userMessage.trim()); 
-      userMessage = userMessage.trim(); // use original message if no correction
+      console.error("Empty or malformed GPT correction response:", correctionResponse);
+      correctedData = { original: userMessage, corrected: userMessage }; // fallback
     }
-
-
-    // console.log("Correction response"); 
-    // console.log(JSON.stringify(correctionResponse, null, 2));
-    // console.log("printing trimmed portion of correction response");
-    // console.log(correctionResponse.choices[0].message.content.trim());
-    // console.log("I am at if statement of correction response"); 
-
-    // if (
-    //   !correctionResponse ||
-    //   !correctionResponse.choices ||
-    //   !correctionResponse.choices.length
-    // ) {
-    //   console.log("came back to correction response if statment___I am at if statement of correction response");
-    //   console.error("Correction failed or returned empty:", correctionResponse);
-    //   // fallback to original userMessage
-    // } else{
-    //    console.log("I am printing trimmed portion of correction response");
-    //    console.log(correctionResponse.choices[0].message.content.trim());
-    //    userMessage = correctionResponse.choices[0].message.content.trim();
-    // }
+    
+    // ✅ Step 2: Apply correction if different
+    if (correctedData?.corrected && correctedData.original !== correctedData.corrected) {
+      console.log("Auto-correcting input:", correctedData.original, "→", correctedData.corrected);
+      userMessage = correctedData.corrected;
+    } else {
+      console.log("No correction needed. Using original input:", userMessage.trim());
+      userMessage = userMessage.trim();
+    }
+    
+    
 
     // Handle pending session states for meeting scheduling
     console.log("printing user session pending args outside if ", sessions[userNumber]?.pendingArgs); 
@@ -833,7 +802,7 @@ Format your response in JSON like:
       const args = pending.pendingArgs; 
       console.log("I am going ahead and printing args"); 
       console.log(args);
-      console.log("✅ args.date =", args.startDate);
+      console.log("✅ args.startdate =", args.startDate);
       console.log("✅ args.startTime =", args.startTime);
 
 
@@ -844,30 +813,11 @@ Format your response in JSON like:
 
       
       console.log("here before all the pending ifs start"); 
-      // ✅ Handle correction confirmation response
-      if (sessions[userNumber]?.awaitingCorrectionConfirmation) {
-        const pending = sessions[userNumber];
-        const corrected = pending.correctionCandidate;
-        const original = pending.originalMessage;
-
-        if (userMessage.toLowerCase() === "yes") {
-          userMessage = corrected;
-          delete sessions[userNumber].awaitingCorrectionConfirmation;
-          delete sessions[userNumber].correctionCandidate;
-          delete sessions[userNumber].originalMessage;
-          console.log("✅ User confirmed correction. Using corrected input:", userMessage);
-        } else {
-          // Treat any other reply as a new/fresh message — drop the correction flow
-          delete sessions[userNumber];
-          const twiml = new MessagingResponse();
-          twiml.message("Got it! Let's start over. Please rephrase your message.");
-          return res.type("text/xml").send(twiml.toString());
-        }
-      }
 
       if (pending.awaitingStartDate) {
-        console.log("start date missing"); 
+        console.log("start date missing and am assigning it"); 
         args.startDate = userMessage;
+        console.log("here is the assigned start date", args.startDate); 
       } else if (pending.awaitingEndDate) {
         args.endDate = userMessage; 
       } else if (pending.awaitingTitle){
@@ -875,6 +825,7 @@ Format your response in JSON like:
       }  else if (pending.awaitingStartTime){
         console.log("start time missing, I have it and now I am assigning it");
         args.startTime = userMessage; 
+        console.log("I have assigned start time -->", args.startTime);
         const validTime = await parseAndValidateClockTime(userMessage, args.startDate, args, userNumber, res);
         if (!validTime) return;
       } else if (pending.awaitingDuration) {
@@ -951,19 +902,38 @@ Format your response in JSON like:
 
       // Reject past or hallucinated dates like 2022
       if (args.startDate) {
-        const parsedDate = moment(args.startDate, "YYYY-MM-DD", true);
-        console.log("printing parsed date",parsedDate); 
+        console.log("Entered args.startDate block");
+      
+        const rawStartDate = args.startDate;
+      
+        // Pattern to match formats like "May 28, 2025"
+        const humanDatePattern = /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s*\d{4}/gi;
+      
+        // Normalize any human-readable date inside the string to "YYYY-MM-DD"
+        const normalizedStartDate = rawStartDate.replace(humanDatePattern, (match) => {
+          return moment(match).format("YYYY-MM-DD");
+        });
+      
+        console.log("Normalized start date string:", normalizedStartDate);
+      
+        const parsedDate = moment(normalizedStartDate, "YYYY-MM-DD", true);
+        console.log("Parsed date object:", parsedDate);
+      
         if (!parsedDate.isValid() || parsedDate.isBefore(moment(), "day")) {
           sessions[userNumber] = {
             awaitingStartDate: true,
             pendingArgs: args,
           };
-
+      
           const twiml = new MessagingResponse();
-          twiml.message("Seems like you haven't provided date or the date you mentioned seems to be in the past or unclear. Please reply with a future date (e.g., May 20, 2025).");
+          twiml.message("Seems like you haven't provided a date or I missed catching it. Please reply with a valid future date (e.g., May 30, 2025).");
           return res.type("text/xml").send(twiml.toString());
         }
+      
+        // ✅ If valid date, update args.startDate for downstream use
+        args.startDate = parsedDate.format("YYYY-MM-DD");
       }
+      
 
 
       // if (!args.startDate) {
@@ -1112,10 +1082,7 @@ For example: - "schedule team sync forever monday beginning may 12th 2025" → N
 IMPORTANT DATE RULES: - Never return relative date terms like "tomorrow", "next week", or "today".
 - Always convert them to an actual date in the format YYYY-MM-DD.
 - The current date is: ${todayDate}
-- If the user says "tomorrow", convert it to 2025-05-07. 
-- When a user says “tomorrow”, always convert it to 2025-05-07.
-- When a user says “next Monday”, compute the real date from 2025-05-06.
-- Never return made-up or fixed placeholder dates like “2022-10-06”.
+-  Use the current date it resolve expressions like "tomorrow", "next Monday", or "in two days" into exact calendar dates.
 - Always return an actual calendar date in YYYY-MM-DD format based on today: 2025-05-06.
 
 IMPORTANT: If the user says something like "10 mins" or "30 minutes", treat that as duration — NOT start time.
