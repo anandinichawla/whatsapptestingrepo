@@ -1286,6 +1286,8 @@ Your task is to first analyze the user's message and check if it contains all re
   - Recurrence in RRULE format (like 'RRULE:FREQ=WEEKLY;BYDAY=MO')
   - (For recurring meetings) End date of recurrance (until when it should repeat)
 
+"Always extract actual values from the user's input. Never use generic or placeholder examples like 'daily sync' or 'team@example.com'."
+
 Never include phrases like "forever", "every Monday", or "daily" in the start time. The recurrence rule should capture that instead.
 - Do NOT guess the start time. If it's unclear or missing, return nothing and wait for the user to confirm it.
 
@@ -1306,7 +1308,6 @@ IMPORTANT DATE RULES: - Never return relative date terms like "tomorrow", "next 
 IMPORTANT: If the user says something like "10 mins" or "30 minutes", treat that as duration — NOT start time.
 
 If the start time is unclear or looks like a duration, leave it blank. Do NOT fill startTime with vague or incorrect values.
-
 
 Examples:
 - Input: "Schedule daily sync at 10 AM with team@example.com for 30 mins starting May 6"
@@ -1364,6 +1365,9 @@ If anything is unclear or missing (including end date for recurring meetings), r
 "If someone says "daily at 5pm", ask: "From which date should this repeat?" 
 "Never hallucinate or infer old or ambiguous dates. Only return a date if you're confident it's in the future. If you're unsure, leave the date field blank and let the user confirm it."
 
+"Never copy from examples. Always extract real values from the user's actual message." 
+"Always extract actual values from the user's input. Never use generic or placeholder examples like 'daily sync' or 'team@example.com'."
+
 If the message is clear, contains all the required fields (invitee email, meeting title, date, time with AM/PM, and duration), and there is no ambiguity, proceed to schedule the meeting **immediately** without sending a confirmation or asking the user to respond again.
 
 Do NOT reply with a summary or confirmation message if all the required fields are present and unambiguous. Simply schedule the meeting silently.
@@ -1373,11 +1377,13 @@ Do NOT reply with a summary or confirmation message if all the required fields a
           pendingMeeting: false,
         };
       }
+      //console.log("Sending this to GPT:", JSON.stringify(sessions[userNumber].history, null, 2));
 
         // Generate reply with full context
         const completion = await openai.chat.completions.create({
           model: "gpt-4",
           messages: sessions[userNumber].history,
+          temperature: 0.2, 
           functions: [
             {
               name: "create_calendar_event",
@@ -1621,363 +1627,253 @@ app.get("/auth/google/callback", async (req, res) => {
       const saved = await saveRefreshToken(userNumber, tokens.refresh_token);
       if (!saved) return res.send('❌ Failed to save token.');
 
-      return res.send('✅ Authentication successful! You can now schedule meetings on WhatsApp.');
-    } // catch (err) {
-    //   console.error('OAuth error:', err.message);
-    //   res.send('❌ Failed to authenticate with Google.');
-    // }
+      return res.send(
+        `<!DOCTYPE html>
+  <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Authentication Success</title>
+      <style>
+        body {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+          margin: 0;
+          font-family: Arial, sans-serif;
+          background-color: #f0f0f0;
+        }
+        .card {
+          background-color: #ffffff; /* Changed to white background */
+          color: #333; /* Changed text color for contrast */
+          padding: 20px;
+          border-radius: 10px;
+          box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+          text-align: center;
+          max-width: 45%;
+        }
+        .card img {
+          width: 150px;
+          height: 150px;
+          vertical-align: middle;
+          margin-right: 10px;
+        }
+  
+        .continue-button {
+          background-color: #4CAF50;
+          color: white;
+          border: none;
+          padding: 10px 30px;
+          text-align: center;
+          text-decoration: none;
+          display: inline-block;
+          font-size: 16px;
+          font-weight: bold;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background-color 0.3s ease, transform 0.2s ease;
+          margin-top: 15px;
+      }
+  
+      .continue-button:hover {
+          background-color: #45a049;
+          transform: scale(1.05);
+      }
+  
+      .continue-button:active {
+          background-color: #3e8e41;
+          transform: scale(0.98);
+      }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div>
+          <img src="https://rxmjzmgvxbotzfqhidzd.supabase.co/storage/v1/object/public/images//thumbsup.png" alt="Thumbs Up" />
+        </div>
+  
+        <div>
+          <h2>✅ Authentication Successful! 🎉<br /></h2>
+  
+          <h3 style="font-size: 25px;">
+              You can now schedule any meetings on WhatsApp 📅📱
+          </h3>
+        </div>
+  
+        <div>
+          <a href="https://wa.me/15557083934" target="_blank">
+              <button class="continue-button">👉 Continue</button>
+          </a>
+      </div>
+      </div>
+    </body>
+  </html>`
+      );
+    } catch (err) {
+      console.error("OAuth error:", err.message);
+      res.send("❌ Failed to authenticate with Google.");
+    }
   });
-
-  // Update reminder route
+  
+  let isCronRunning = false; // Track if the cron job is active
+  const cronJobs = new Map(); // Map to store cron jobs for each task
+  
   app.post("/update-reminder", async (req, res) => {
-    const { reminder_frequency } = req.body;
-
-    console.log("inside be update-reminder req.body", reminder_frequency);
-
-    if (isCronRunning) {
-      console.log("Cron job already running. Ignoring duplicate trigger.");
+    const { reminder_type, reminder_frequency, taskId, dueDateTime, reminderDateTime } = req.body;
+  
+    console.log("inside be update-reminder req.body", req.body);
+  
+    if (cronJobs.has(taskId)) {
+      console.log(
+        `Cron job already exists for task ${taskId}. Ignoring duplicate trigger.`
+      );
       return res.status(200).json({ message: "Reminder already scheduled" });
     }
-
-    isCronRunning = true;
-
-    const frequencyPattern =
-      /(\d+)\s*(minute|min|mins|hour|hrs|hours|day|days)s?/;
-    const match = reminder_frequency.match(frequencyPattern);
-
-    console.log("frequencyPattern, match", frequencyPattern, match);
-
-    if (!match) {
-      console.log("Invalid reminder frequency format");
-      return res
-        .status(400)
-        .json({ message: "Invalid reminder frequency format" });
-    }
-
-    const quantity = parseInt(match[1], 10); // Extract the numeric part
-    const unit = match[2]; // Extract the unit (minute, hour, day)
-
-    console.log("quantity, unit", quantity, unit);
-
-    let cronExpression = "";
-
-    // Construct the cron expression based on the unit
-    if (unit === "minute" || unit === "min" || unit === "mins") {
-      cronExpression = `*/${quantity} * * * *`; // Every X minutes
-    } else if (unit === "hour" || unit == "hours" || unit === "hrs") {
-      cronExpression = `0 */${quantity} * * *`; // Every X hours, at the start of the hour
-    } else if (unit === "day" || unit === "days") {
-      cronExpression = `0 0 */${quantity} * *`; // Every X days, at midnight
-    } else {
-      console.log("Unsupported frequency unit");
-      return res.status(400).json({ message: "Unsupported frequency unit" });
-    }
-
-    cron.schedule(cronExpression, async () => {
-      console.log("Checking for pending reminders...");
-
-      const { data: tasks, error } = await supabase
-        .from("tasks")
-        .select("*")
-        .eq("reminder", true)
-        .neq("task_done", "Completed")
-        .neq("task_done", "No")
-        .neq("task_done", "Reminder sent")
-        .not("tasks", "is", null)
-        .neq("tasks", "");
-
+  
+    const sendReminder = async () => {
+      console.log(`Checking reminder for task ${taskId}...`);
+  
+      const { data: groupedData, error } = await supabase
+        .from("grouped_tasks")
+        .select("name, phone, tasks");
+  
       if (error) {
-        console.error("Error fetching reminders:", error);
+        console.error("Error fetching grouped_tasks", error);
         return;
       }
-
-      console.log(`Found ${tasks.length} tasks to remind`);
-
-      for (const task of tasks) {
-        console.log("Sending reminder to:", task.phone);
-        sendMessage(
-          `whatsapp:+${task.phone}`,
-          `Reminder: Has the task "${task.tasks}" assigned to you been completed yet? Reply with Yes or No.`
+  
+      const matchedRow = groupedData.find((row) =>
+        row.tasks?.some((task) => task.taskId === taskId)
+      );
+  
+      if (!matchedRow) {
+        console.log(
+          `No matching task found for task ${taskId}. Stopping reminder.`
         );
-
-        userSessions[`whatsapp:+${task.phone}`] = { step: 5, task: task.tasks };
+        cronJobs.get(taskId)?.stop();
+        cronJobs.delete(taskId);
+        return;
       }
-    });
-
-    res.status(200).json({ message: "Reminder scheduled" });
-  });
-}
-
-// Refresh tasks route
-app.get("/refresh", async (req, res) => {
-  console.log("Refreshing tasks from Supabase...");
-  const { data, error } = await supabase.from("tasks").select("*");
-  if (error) {
-    console.error("Error refreshing tasks:", error);
-    return res.status(500).json({ message: "Error fetching tasks" });
-  }
-  allData = data;
-  console.log("Tasks updated!");
-  res
-    .status(200)
-    .json({ message: "Tasks refreshed successfully", tasks: allData });
-    console.log("tokens", tokens);
-
-    const saved = await saveRefreshToken(userNumber, tokens.refresh_token);
-    if (!saved) return res.send("❌ Failed to save token.");
-
-    return res.send(
-      `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Authentication Success</title>
-    <style>
-      body {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 100vh;
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background-color: #f0f0f0;
+  
+      const matchedTask = matchedRow.tasks.find((task) => task.taskId === taskId);
+  
+      if (
+        matchedTask.reminder !== "true" ||
+        matchedTask.task_done === "Completed" ||
+        matchedTask.task_done === "No" ||
+        matchedTask.task_done === "Reminder sent" ||
+        !matchedTask.task_details
+      ) {
+        console.log(
+          `Task ${taskId} doesn't need reminder anymore. Stopping reminder.`
+        );
+        cronJobs.get(taskId)?.stop();
+        cronJobs.delete(taskId);
+        return;
       }
-      .card {
-        background-color: #ffffff; /* Changed to white background */
-        color: #333; /* Changed text color for contrast */
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-        text-align: center;
-        max-width: 45%;
-      }
-      .card img {
-        width: 150px;
-        height: 150px;
-        vertical-align: middle;
-        margin-right: 10px;
-      }
-
-      .continue-button {
-        background-color: #4CAF50;
-        color: white;
-        border: none;
-        padding: 10px 30px;
-        text-align: center;
-        text-decoration: none;
-        display: inline-block;
-        font-size: 16px;
-        font-weight: bold;
-        border-radius: 8px;
-        cursor: pointer;
-        transition: background-color 0.3s ease, transform 0.2s ease;
-        margin-top: 15px;
-    }
-
-    .continue-button:hover {
-        background-color: #45a049;
-        transform: scale(1.05);
-    }
-
-    .continue-button:active {
-        background-color: #3e8e41;
-        transform: scale(0.98);
-    }
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div>
-        <img src="https://rxmjzmgvxbotzfqhidzd.supabase.co/storage/v1/object/public/images//thumbsup.png" alt="Thumbs Up" />
-      </div>
-
-      <div>
-        <h2>✅ Authentication Successful! 🎉<br /></h2>
-
-        <h3 style="font-size: 25px;">
-            You can now schedule any meetings on WhatsApp 📅📱
-        </h3>
-      </div>
-
-      <div>
-        <a href="https://wa.me/15557083934" target="_blank">
-            <button class="continue-button">👉 Continue</button>
-        </a>
-    </div>
-    </div>
-  </body>
-</html>`
-    );
-  } catch (err) {
-    console.error("OAuth error:", err.message);
-    res.send("❌ Failed to authenticate with Google.");
-  }
-});
-
-let isCronRunning = false; // Track if the cron job is active
-const cronJobs = new Map(); // Map to store cron jobs for each task
-
-app.post("/update-reminder", async (req, res) => {
-  const { reminder_type, reminder_frequency, taskId, dueDateTime, reminderDateTime } = req.body;
-
-  console.log("inside be update-reminder req.body", req.body);
-
-  if (cronJobs.has(taskId)) {
-    console.log(
-      `Cron job already exists for task ${taskId}. Ignoring duplicate trigger.`
-    );
-    return res.status(200).json({ message: "Reminder already scheduled" });
-  }
-
-  const sendReminder = async () => {
-    console.log(`Checking reminder for task ${taskId}...`);
-
-    const { data: groupedData, error } = await supabase
-      .from("grouped_tasks")
-      .select("name, phone, tasks");
-
-    if (error) {
-      console.error("Error fetching grouped_tasks", error);
-      return;
-    }
-
-    const matchedRow = groupedData.find((row) =>
-      row.tasks?.some((task) => task.taskId === taskId)
-    );
-
-    if (!matchedRow) {
-      console.log(
-        `No matching task found for task ${taskId}. Stopping reminder.`
+  
+      console.log(`Sending reminder to: ${matchedRow.phone} for task ${taskId}`);
+  
+      // send TEMPORARY due date and time for one-time reminders
+      sendMessage(
+        `whatsapp:+${matchedRow.phone}`,
+        `⏰ *Reminder*\n\nHas the task *${matchedTask.task_details}* assigned to you been completed yet?\n✉️ Reply with Yes or No.\n📅 *Due:* ${matchedTask.due_date}`
       );
-      cronJobs.get(taskId)?.stop();
-      cronJobs.delete(taskId);
-      return;
-    }
-
-    const matchedTask = matchedRow.tasks.find((task) => task.taskId === taskId);
-
-    if (
-      matchedTask.reminder !== "true" ||
-      matchedTask.task_done === "Completed" ||
-      matchedTask.task_done === "No" ||
-      matchedTask.task_done === "Reminder sent" ||
-      !matchedTask.task_details
-    ) {
-      console.log(
-        `Task ${taskId} doesn't need reminder anymore. Stopping reminder.`
-      );
-      cronJobs.get(taskId)?.stop();
-      cronJobs.delete(taskId);
-      return;
-    }
-
-    console.log(`Sending reminder to: ${matchedRow.phone} for task ${taskId}`);
-
-    // send TEMPORARY due date and time for one-time reminders
-    sendMessage(
-      `whatsapp:+${matchedRow.phone}`,
-      `⏰ *Reminder*\n\nHas the task *${matchedTask.task_details}* assigned to you been completed yet?\n✉️ Reply with Yes or No.\n📅 *Due:* ${matchedTask.due_date}`
-    );
-
-    userSessions[`whatsapp:+${matchedRow.phone}`] = {
-      step: 5,
-      task: matchedTask.task_details,
-      assignee: matchedRow.name,
-      taskId: taskId,
+  
+      userSessions[`whatsapp:+${matchedRow.phone}`] = {
+        step: 5,
+        task: matchedTask.task_details,
+        assignee: matchedRow.name,
+        taskId: taskId,
+      };
+  
+      // For one-time reminders, mark task to stop further reminders
+      if (reminder_type === "one-time") {
+        const { data: existingData } = await supabase
+          .from("grouped_tasks")
+          .select("tasks")
+          .eq("name", matchedRow.name)
+          .single();
+  
+        const updatedTasks = existingData.tasks.map((task) =>
+          task.taskId === taskId ? { ...task, reminder: "false" } : task
+        );
+  
+        await supabase
+          .from("grouped_tasks")
+          .update({ tasks: updatedTasks })
+          .eq("name", matchedRow.name);
+  
+        cronJobs.delete(taskId); // Clean up
+      }
     };
-
-    // For one-time reminders, mark task to stop further reminders
+  
     if (reminder_type === "one-time") {
-      const { data: existingData } = await supabase
-        .from("grouped_tasks")
-        .select("tasks")
-        .eq("name", matchedRow.name)
-        .single();
-
-      const updatedTasks = existingData.tasks.map((task) =>
-        task.taskId === taskId ? { ...task, reminder: "false" } : task
-      );
-
-      await supabase
-        .from("grouped_tasks")
-        .update({ tasks: updatedTasks })
-        .eq("name", matchedRow.name);
-
-      cronJobs.delete(taskId); // Clean up
-    }
-  };
-
-  if (reminder_type === "one-time") {
-    // Schedule one-time reminder at dueDateTime
-    const now = moment().tz("Asia/Kolkata");
-    const reminderTime = moment.tz(reminderDateTime, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
-    // const reminderTimeWithOffset = reminderTime.clone().subtract(20, "minutes");
-    const delay = reminderTime.diff(now);
-
-    if (delay <= 0) {
-      console.log(`Task ${taskId} due date is in the past. Sending reminder now.`);
-      await sendReminder();
-      return res.status(200).json({ message: "One-time reminder sent" });
-    }
-
-    setTimeout(async () => {
-      await sendReminder();
-    }, delay);
-
-    cronJobs.set(taskId, { type: "one-time" }); // Store for tracking
-    console.log(`Scheduled one-time reminder for task ${taskId} at ${dueDateTime}`);
-    return res.status(200).json({ message: "One-time reminder scheduled" });
-  } else {
-    // Handle recurring reminders (existing logic)
-    const frequencyPattern =
-      /(\d+)\s*(minute|min|mins|hour|hr|hrs|hours|day|days)s?/;
-    const match = reminder_frequency?.match(frequencyPattern);
-
-    if (!match) {
-      console.log("Invalid reminder frequency format");
-      return res
-        .status(400)
-        .json({ message: "Invalid reminder frequency format" });
-    }
-
-    const quantity = parseInt(match[1], 10);
-    const unit = match[2];
-
-    let cronExpression = "";
-    if (unit === "minute" || unit === "min" || unit === "mins") {
-      cronExpression = `*/${quantity} * * * *`;
-    } else if (
-      unit === "hour" ||
-      unit === "hours" ||
-      unit === "hrs" ||
-      unit === "hr"
-    ) {
-      cronExpression = `0 */${quantity} * * *`;
-    } else if (unit === "day" || unit === "days") {
-      cronExpression = `0 0 */${quantity} * *`;
+      // Schedule one-time reminder at dueDateTime
+      const now = moment().tz("Asia/Kolkata");
+      const reminderTime = moment.tz(reminderDateTime, "YYYY-MM-DD HH:mm", "Asia/Kolkata");
+      // const reminderTimeWithOffset = reminderTime.clone().subtract(20, "minutes");
+      const delay = reminderTime.diff(now);
+  
+      if (delay <= 0) {
+        console.log(`Task ${taskId} due date is in the past. Sending reminder now.`);
+        await sendReminder();
+        return res.status(200).json({ message: "One-time reminder sent" });
+      }
+  
+      setTimeout(async () => {
+        await sendReminder();
+      }, delay);
+  
+      cronJobs.set(taskId, { type: "one-time" }); // Store for tracking
+      console.log(`Scheduled one-time reminder for task ${taskId} at ${dueDateTime}`);
+      return res.status(200).json({ message: "One-time reminder scheduled" });
     } else {
-      console.log("Unsupported frequency unit");
-      return res.status(400).json({ message: "Unsupported frequency unit" });
+      // Handle recurring reminders (existing logic)
+      const frequencyPattern =
+        /(\d+)\s*(minute|min|mins|hour|hr|hrs|hours|day|days)s?/;
+      const match = reminder_frequency?.match(frequencyPattern);
+  
+      if (!match) {
+        console.log("Invalid reminder frequency format");
+        return res
+          .status(400)
+          .json({ message: "Invalid reminder frequency format" });
+      }
+  
+      const quantity = parseInt(match[1], 10);
+      const unit = match[2];
+  
+      let cronExpression = "";
+      if (unit === "minute" || unit === "min" || unit === "mins") {
+        cronExpression = `*/${quantity} * * * *`;
+      } else if (
+        unit === "hour" ||
+        unit === "hours" ||
+        unit === "hrs" ||
+        unit === "hr"
+      ) {
+        cronExpression = `0 */${quantity} * * *`;
+      } else if (unit === "day" || unit === "days") {
+        cronExpression = `0 0 */${quantity} * *`;
+      } else {
+        console.log("Unsupported frequency unit");
+        return res.status(400).json({ message: "Unsupported frequency unit" });
+      }
+  
+      const cronJob = cron.schedule(cronExpression, sendReminder);
+      cronJobs.set(taskId, cronJob);
+      console.log(
+        `Scheduled recurring reminder for task ${taskId} with frequency ${reminder_frequency}`
+      );
+      return res.status(200).json({ message: "Recurring reminder scheduled" });
     }
+  });
 
-    const cronJob = cron.schedule(cronExpression, sendReminder);
-    cronJobs.set(taskId, cronJob);
-    console.log(
-      `Scheduled recurring reminder for task ${taskId} with frequency ${reminder_frequency}`
-    );
-    return res.status(200).json({ message: "Recurring reminder scheduled" });
-  }
-});
-
-// Initialize data and start server
-async function main() {
-  allData = await getAllTasks();
 }
-
-main();
-makeTwilioRequest();
-
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+  
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+    makeTwilioRequest();
+  });
